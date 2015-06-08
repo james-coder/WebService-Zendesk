@@ -1,4 +1,5 @@
 package API::Zendesk;
+# ABSTRACT: API interface to Zendesk
 use Moose;
 use MooseX::Params::Validate;
 use MooseX::WithCache;
@@ -11,7 +12,33 @@ use YAML;
 use URI::Encode qw/uri_encode/;
 use Encode;
 
+=head1 NAME
+
+API::Zendesk
+
+=head1 DESCRIPTION
+
+Manage Zendesk connection, get tickets etc.  This is a work-in-progress - we have only written
+the access methods we have used so far, but as you can see, it is a good template to extend
+for all remaining API endpoints.  I'm totally open for any pull requests! :)
+
+This module uses MooseX::Log::Log4perl for logging - be sure to initialize!
+
+=head1 ATTRIBUTES
+
+=cut
+
 with "MooseX::Log::Log4perl";
+
+=over 4
+
+=item cache
+
+Optional.
+
+Provided by MooseX::WithX - optionally pass a Cache::FileCache object to cache and avoid unnecessary requests
+
+=cut
 
 # Unfortunately it is necessary to define the cache type to be expected here with 'backend'
 # TODO a way to be more generic with cache backend would be better
@@ -19,18 +46,35 @@ with 'MooseX::WithCache' => {
     backend => 'Cache::FileCache',
 };
 
+=item zendesk_token
+
+Required.
+
+=cut
 has 'zendesk_token' => (
     is          => 'ro',
     isa         => 'Str',
     required    => 1,
     );
 
+=item zendesk_username
+
+Required.
+
+=cut
 has 'zendesk_username' => (
     is          => 'ro',
     isa         => 'Str',
     required    => 1,
     );
 	
+=item backoff_time
+
+Optional.  Default: 10
+
+Time in seconds to back off before retrying request if a http 429 (Too Many Requests) response is received. 
+
+=cut
 has 'backoff_time' => (
     is          => 'ro',
     isa         => 'Int',
@@ -38,12 +82,23 @@ has 'backoff_time' => (
     default     => 10,
     );
 
+=item zendesk_api_url
+
+Optional. Default: https://elasticsearch.zendesk.com/api/v2
+
+=cut
 has 'zendesk_api_url' => (
     is		=> 'ro',
     isa		=> 'Str',
     required	=> 1,
     default	=> 'https://elasticsearch.zendesk.com/api/v2',
     );
+
+=item user_agent
+
+Optional.  A new LWP::UserAgent will be created for you if you don't already have one you'd like to reuse.
+
+=cut
 
 has 'user_agent' => (
     is		=> 'ro',
@@ -54,7 +109,7 @@ has 'user_agent' => (
 
     );
 
-has 'zendesk_credentials' => (
+has '_zendesk_credentials' => (
     is		=> 'ro',
     isa		=> 'Str',
     required	=> 1,
@@ -70,7 +125,7 @@ sub _build_user_agent {
     );
     $ua->default_header( 'Content-Type'	    => "application/json" );
     $ua->default_header( 'Accept'	    => "application/json" );
-    $ua->default_header( 'Authorization'    => "Basic " . $self->zendesk_credentials );
+    $ua->default_header( 'Authorization'    => "Basic " . $self->_zendesk_credentials );
     return $ua;
 }
 
@@ -79,19 +134,39 @@ sub _build_zendesk_credentials {
     return encode_base64( $self->zendesk_username . "/token:" . $self->zendesk_token );
 }
 
+=back
+
+=head1 METHODS
+
+=over 4
+
+=item init
+
+Create the user agent and credentials.  As these are built lazily, initialising manually can avoid
+errors thrown when building them later being silently swallowed in try/catch blocks.
+
+=cut
+
 sub init {
     my $self = shift;
     my $ua = $self->user_agent;
-    my $credentials = $self->zendesk_credentials;
+    my $credentials = $self->_zendesk_credentials;
 }
 
+=item get_incremental_tickets
+
+Access the L<Incremental Ticket Export|https://developer.zendesk.com/rest_api/docs/core/incremental_export#incremental-ticket-export> interface
+
+!! Broken !!
+
+=cut
 sub get_incremental_tickets {
     my ( $self, %params ) = validated_hash(
         \@_,
         size        => { isa    => 'Int', optional => 1 },
     );
     my $path = '/incremental/ticket_events.json';
-    my @results = $self->paged_get_request_from_api(
+    my @results = $self->_paged_get_request_from_api(
         field   => '???', # <--- TODO
         method  => 'get',
 	path    => $path,
@@ -103,6 +178,35 @@ sub get_incremental_tickets {
 
 }
 
+=item search
+
+Access the L<Search|https://developer.zendesk.com/rest_api/docs/core/search> interface
+
+Parameters
+
+=over 4
+
+=item query
+
+Required.  Query string
+
+=item sort_by
+
+Optional. Default: "updated_at"
+
+=item sort_order
+
+Optional. Default: "desc"
+
+=item size
+
+Optional.  Integer indicating the number of entries to return.  The number returned may be slightly larger (paginating will stop when this number is exceeded).
+
+=back
+
+Returns array of results.
+
+=cut
 sub search {
     my ( $self, %params ) = validated_hash(
         \@_,
@@ -114,7 +218,7 @@ sub search {
     $self->log->debug( "Searching: $params{query}" );
     my $path = '/search.json?query=' . uri_encode( $params{query} ) . "&sort_by=$params{sort_by}&sort_order=$params{sort_order}";
 
-    my @results = $self->paged_get_request_from_api(
+    my @results = $self->_paged_get_request_from_api(
         field   => 'results',
         method  => 'get',
 	path    => $path,
@@ -125,22 +229,23 @@ sub search {
     return @results;
 }
 
-sub get_diagnostics_from_ticket {
-    my ( $self, %params ) = validated_hash(
-        \@_,
-        ticket_id	=> { isa    => 'Int' },
-    );
-    my @comments = $self->get_comments_from_ticket(
-	ticket_id   => $params{ticket_id},
-	);
+=item get_comments_from_ticket
 
-    my @attachments;
-    foreach my $comment( @comments ){
-        push( @attachments, @{ $comment->{attachments} } );
-    }
-    return @attachments;
-}
+Access the L<List Comments|https://developer.zendesk.com/rest_api/docs/core/ticket_comments#list-comments> interface
 
+Parameters
+
+=over 4
+
+=item ticket_id
+
+Required.  The ticket id to query on.
+
+=back
+
+Returns an array of comments
+
+=cut
 sub get_comments_from_ticket {
     my ( $self, %params ) = validated_hash(
         \@_,
@@ -148,7 +253,7 @@ sub get_comments_from_ticket {
     );
 
     my $path = '/tickets/' . $params{ticket_id} . '/comments.json';
-    my @comments = $self->paged_get_request_from_api(
+    my @comments = $self->_paged_get_request_from_api(
             method  => 'get',
 	    path    => $path,
             field   => 'comments',
@@ -157,12 +262,37 @@ sub get_comments_from_ticket {
     return @comments;
 }
 
+=item download_attachment
+
+Download an attachment.
+
+Parameters
+
+=over 4
+
+=item attachment
+
+Required.  An attachment HashRef as returned as part of a comment.
+
+=item dir
+
+Directory to download to
+
+=item force
+
+Force overwrite if item already exists
+
+=back
+
+Returns path to the downloaded file
+
+=cut
+
 sub download_attachment {
     my ( $self, %params ) = validated_hash(
         \@_,
         attachment	=> { isa	=> 'HashRef' },
 	dir	        => { isa	=> 'Str' },
-	ticket_id	=> { isa	=> 'Int' },
 	force		=> { isa	=> 'Bool', optional => 1 },
     );
     
@@ -194,22 +324,37 @@ sub download_attachment {
     return $target;
 }
 
+=item add_response_to_ticket
 
+Shortcut to L<Updating Tickets|https://developer.zendesk.com/rest_api/docs/core/tickets#updating-tickets> specifically for adding a response.
+
+=over 4
+
+=item ticket_id
+
+Required.  Ticket to add response to
+
+=item public
+
+Optional.  Default: 0 (not public).  Set to "1" for public response
+
+=item response
+
+Required.  The text to be addded to the ticket as response.
+
+=back
+
+Returns response HashRef
+
+=cut
 sub add_response_to_ticket {
     my ( $self, %params ) = validated_hash(
         \@_,
         ticket_id	=> { isa    => 'Int' },
 	public		=> { isa    => 'Bool', optional => 1, default => 0 },
 	response	=> { isa    => 'Str' },
-	test		=> { isa    => 'Bool', optional => 1 },
     );
 
-    if( $params{test} ){
-	$self->log->warn( "Running in test, not really connecting with Zendesk" );
-	# TODO - what does a real response look like?
-	return { 'test' => 1 };
-    }
-	
     my $body = {
 	"ticket" => {
 	    "comment" => {
@@ -218,9 +363,41 @@ sub add_response_to_ticket {
 	    }
 	}
     };
-    my $encoded_body = encode_json( $body );
-    #$self->log->debug( "Submitting:\n" . $encoded_body );
-    my $response = $self->request_from_api(
+    return $self->update_ticket(
+        body        => $body,
+        ticket_id   => $params{ticket_id},
+        );
+
+}
+
+=item update_ticket
+
+Access L<Updating Tickets|https://developer.zendesk.com/rest_api/docs/core/tickets#updating-tickets> interface.
+
+=over 4
+
+=item ticket_id
+
+Required.  Ticket to add response to
+
+=item body
+
+Required.  HashRef of valid parameters - see link above for details.
+
+=back
+
+Returns response HashRef
+
+=cut
+sub update_ticket {
+    my ( $self, %params ) = validated_hash(
+        \@_,
+        ticket_id	=> { isa    => 'Int' },
+	body		=> { isa    => 'HashRef' },
+    );
+
+    my $encoded_body = encode_json( $params{body} );
+    my $response = $self->_request_from_api(
             method  => 'put',
 	    path    => '/tickets/' . $params{ticket_id} . '.json',
 	    body    => $encoded_body,
@@ -228,150 +405,130 @@ sub add_response_to_ticket {
     return $response;
 }
 
-# Get ticket information
+=item get_ticket
+
+Access L<Getting Tickets|https://developer.zendesk.com/rest_api/docs/core/tickets#getting-tickets> interface.
+
+=over 4
+
+=item ticket_id
+
+Required.  Ticket to get
+
+=item no_cache
+
+Disable cache get/set for this operation
+
+=back
+
+Returns ticket HashRef
+
+=cut
 sub get_ticket {
     my ( $self, %params ) = validated_hash(
         \@_,
         ticket_id	=> { isa    => 'Int' },
-	test		=> { isa    => 'Bool', optional => 1 },
+        no_cache        => { isa    => 'Bool', optional => 1 }
     );
-    if( $params{test} ){
-	$self->log->warn( "Running in test, not really connecting with Zendesk" );
-	# TODO - what does a real response look like?
-	return { 'test' => 1 };
-    }
-
+    
     # Try and get the info from the cache
-    my $info = $self->cache_get( 'ticket-' . $params{ticket_id} );
-    if( not $info ){
+    my $ticket;
+    $ticket = $self->cache_get( 'ticket-' . $params{ticket_id} ) unless( $params{no_cache} );
+    if( not $ticket ){
 	$self->log->debug( "Ticket info not cached, requesting fresh: $params{ticket_id}" );
-	$info = $self->request_from_api(
+	my $info = $self->_request_from_api(
             method  => 'get',
 	    path    => '/tickets/' . $params{ticket_id} . '.json',
 	);
 	
-	if( not $info ){
+	if( not $info or not $info->{ticket} ){
 	    $self->log->logdie( "Could not get ticket info for ticket: $params{ticket_id}" );
 	}
+        $ticket = $info->{ticket};
 	# Add it to the cache so next time no web request...
-	$self->cache_set( 'ticket-' . $params{ticket_id}, $info );
+	$self->cache_set( 'ticket-' . $params{ticket_id}, $ticket ) unless( $params{no_cache} );
     }
-    return $info->{ticket};
+    return $ticket;
 }
 
-# See the get_many_organizations below to efficiently get many organizations with one call
+=item get_organizationt
+
+Get a single organization by accessing L<Getting Organizations|https://developer.zendesk.com/rest_api/docs/core/organizations#list-organizations>
+interface with a single organization_id.  The get_many_organizations interface detailed below is more efficient for getting many organizations
+at once.
+
+=over 4
+
+=item organization_id
+
+Required.  Organization id to get
+
+=item no_cache
+
+Disable cache get/set for this operation
+
+=back
+
+Returns organization HashRef
+
+=cut
 sub get_organization {
     my ( $self, %params ) = validated_hash(
         \@_,
         organization_id	=> { isa    => 'Int' },
-	test		=> { isa    => 'Bool', optional => 1},
+        no_cache        => { isa    => 'Bool', optional => 1 }
     );
-    if( $params{test} ){
-	$self->log->warn( "Running in test, not really connecting with Zendesk" );
-	return { 'test' => 1 };
-    }
-    my $info = $self->cache_get( 'organization-' . $params{organization_id} );
-    if( not $info ){
+    
+    my $organization;
+    $organization = $self->cache_get( 'organization-' . $params{organization_id} ) unless( $params{no_cache} );
+    if( not $organization ){
 	$self->log->debug( "Organization info not in cache, requesting fresh: $params{organization_id}" );
-	$info = $self->request_from_api(
+	my $info = $self->_request_from_api(
             method  => 'get',
 	    path    => '/organizations/' . $params{organization_id} . '.json',
 	);
+	if( not $info or not $info->{organization} ){
+	    $self->log->logdie( "Could not get organization info for organization: $params{organization_id}" );
+	}
+        $organization = $info->{organization};
 
 	# Add it to the cache so next time no web request...
-	$self->cache_set( 'organization-' . $params{organization_id}, $info );
+	$self->cache_set( 'organization-' . $params{organization_id}, $organization ) unless( $params{no_cache} );
     }
-    return $info->{organization};
+    return $organization;
 }
 
-# There are many valid options for the request hash, some of which are documented here:
-# https://developer.zendesk.com/rest_api/docs/core/organizations#update-organization
-# example request (submit as perl hashref here):   {"organization_fields":{"temp_lead": "somedude_temp_lead"}}
-sub set_organization {
-    my ( $self, %params ) = validated_hash(
-        \@_,
-	organization_id	=> { isa    => 'Int' },
-	request	        => { isa    => 'HashRef' },
-	test		=> { isa    => 'Bool', optional => 1 },
-    );
+=item get_many_organizations
 
-    if( $params{test} ){
-	$self->log->warn( "Running in test, not really connecting with Zendesk" );
-	# TODO - what does a real response look like?
-	return { 'test' => 1 };
-    }
+=over 4
 
-    my $body = {
-	"organization" =>
-	    $params{request}
-    };
+=item organization_ids
 
-    my $encoded_body = encode_json( $body );
-    $self->log->trace( "Submitting:\n" . $encoded_body );
-    my $response = $self->request_from_api(
-        method  => 'put',
-	    path    => '/organizations/' . $params{organization_id} . '.json',
-	    body    => $encoded_body,
-	);
-    # TODO validate response for success (returns all org data)
+Required.  ArrayRef of organization ids to get
 
-    # Update the cache for this organization
-    $self->cache_set( 'organization-' . $params{organization_id}, $response );
+=item no_cache
 
-    return $response;
-}
+Disable cache get/set for this operation
 
-#get every user under an organization
-sub list_organization_users {
-    my ( $self, %params ) = validated_hash(
-        \@_,
-        organization_id	=> { isa    => 'Int' },
-	test		=> { isa    => 'Bool', optional => 1},
-    );
-    if( $params{test} ){
-        $self->log->warn( "Running in test, not really connecting with Zendesk" );
-        return { 'test' => 1 };
-    }
+=back
 
-    my $users_arrayref  = $self->cache_get( 'organization-users-' . $params{organization_id} );
-    my @users;
-    if( $users_arrayref ){
-        @users = @{ $users_arrayref };
-        $self->log->debug( sprintf "Users from cache for organization: %u", scalar( @users ), $params{organization_id} );
-    }else{
-        $self->log->debug( "Requesting users fresh for organization: $params{organization_id}" );
-        @users = $self->paged_get_request_from_api(
-            field   => 'users',
-            method  => 'get',
-            path    => '/organizations/' . $params{organization_id} . '/users.json',
-        );
+Returns an array of organization HashRefs
 
-
-	# Add it to the cache so next time no web request...
-	$self->cache_set( 'organization-users-' . $params{organization_id}, \@users );
-    }
-    $self->log->debug( sprintf "Got %u users for organization: %u", scalar( @users ), $params{organization_id} );
-
-    return @users;
-}
-
+=cut
 #get data about multiple organizations.
 sub get_many_organizations {
     my ( $self, %params ) = validated_hash(
         \@_,
-        organization_ids  => { isa    => 'ArrayRef' },
-	test	          => { isa    => 'Bool', optional => 1},
+        organization_ids    => { isa    => 'ArrayRef' },
+        no_cache            => { isa    => 'Bool', optional => 1 }
     );
-    if( $params{test} ){
-	$self->log->warn( "Running in test, not really connecting with Zendesk" );
-	return { 'test' => 1 };
-    }
     
     # First see if we already have any of the organizations in our cache - less to get
     my @organizations;
     my @get_organizations;
     foreach my $org_id ( @{ $params{organization_ids} } ){
-        my $organization = $self->cache_get( 'organization-' . $org_id );
+        my $organization;
+        $organization = $self->cache_get( 'organization-' . $org_id ) unless( $params{no_cache} );
         if( $organization ){
             $self->log->debug( "Found organization in cache: $org_id" );
             push( @organizations, $organization );
@@ -383,21 +540,120 @@ sub get_many_organizations {
     # If there are any organizations remaining, get these with a single request
     if( scalar( @get_organizations ) > 0 ){
 	$self->log->debug( "Organizations not in cache, requesting fresh: " . join( ',', @get_organizations ) );
-	my @result= $self->paged_get_request_from_api(
+	my @result= $self->_paged_get_request_from_api(
 	    field   => 'organizations',
             method  => 'get',
 	    path    => '/organizations/show_many.json?ids=' . join( ',', @get_organizations ),
 	);
         foreach( @result ){
             $self->log->debug( "Writing organization to cache: $_->{id}" );
-            $self->cache_set( 'organization-' . $_->{id}, $_ );
+            $self->cache_set( 'organization-' . $_->{id}, $_ ) unless( $params{no_cache} );
             push( @organizations, $_ );
         }
     }
     return @organizations;
 }
 
-sub paged_get_request_from_api {
+
+=item update_organization
+
+Use the L<Update Organization|https://developer.zendesk.com/rest_api/docs/core/organizations#update-organization> interface.
+
+=over 4
+
+=item organization_id
+
+Required.  Organization id to get
+
+=item details
+
+Required.  HashRef of the details to be updated.
+
+=item no_cache
+
+Disable cache set for this operation
+
+=back
+
+returns the 
+=cut
+sub update_organization {
+    my ( $self, %params ) = validated_hash(
+        \@_,
+	organization_id	=> { isa    => 'Int' },
+	details	        => { isa    => 'HashRef' },
+        no_cache        => { isa    => 'Bool', optional => 1 }
+    );
+
+    my $body = {
+	"organization" =>
+	    $params{details}
+    };
+
+    my $encoded_body = encode_json( $body );
+    $self->log->trace( "Submitting:\n" . $encoded_body );
+    my $response = $self->_request_from_api(
+        method  => 'put',
+	    path    => '/organizations/' . $params{organization_id} . '.json',
+	    body    => $encoded_body,
+	);
+    if( not $response or not $response->{organization}{id} == $params{organization_id} ){
+	$self->log->logdie( "Could not update organization: $params{organization_id}" );
+    }
+
+    $self->cache_set( 'organization-' . $params{organization_id}, $response->{organization} ) unless( $params{no_cache} );
+
+    return $response->{organization};
+}
+
+=item list_organization_users
+
+Use the L<List Users|https://developer.zendesk.com/rest_api/docs/core/users#list-users> interface.
+
+=over 4
+
+=item organization_id
+
+Required.  Organization id to get users from
+
+=item no_cache
+
+Disable cache set/get for this operation
+
+=back
+
+Returns array of users
+
+=cut
+sub list_organization_users {
+    my ( $self, %params ) = validated_hash(
+        \@_,
+        organization_id	=> { isa    => 'Int' },
+        no_cache        => { isa    => 'Bool', optional => 1 }
+    );
+
+    my $users_arrayref;
+    $users_arrayref = $self->cache_get( 'organization-users-' . $params{organization_id} ) unless( $params{no_cache} );
+    my @users;
+    if( $users_arrayref ){
+        @users = @{ $users_arrayref };
+        $self->log->debug( sprintf "Users from cache for organization: %u", scalar( @users ), $params{organization_id} );
+    }else{
+        $self->log->debug( "Requesting users fresh for organization: $params{organization_id}" );
+        @users = $self->_paged_get_request_from_api(
+            field   => 'users',
+            method  => 'get',
+            path    => '/organizations/' . $params{organization_id} . '/users.json',
+        );
+
+	$self->cache_set( 'organization-users-' . $params{organization_id}, \@users ) unless( $params{no_cache} );
+    }
+    $self->log->debug( sprintf "Got %u users for organization: %u", scalar( @users ), $params{organization_id} );
+
+    return @users;
+}
+
+sub _paged_get_request_from_api {
     my ( $self, %params ) = validated_hash(
         \@_,
         method	=> { isa => 'Str' },
@@ -410,7 +666,7 @@ sub paged_get_request_from_api {
     my $page = 1;
     my $response = undef;
     do{
-        $response = $self->request_from_api(
+        $response = $self->_request_from_api(
             method  => 'get',
 	    path    => $params{path} . ( $params{path} =~ m/\?/ ? '&' : '?' ) . 'page=' . $page,
 	);
@@ -423,7 +679,7 @@ sub paged_get_request_from_api {
 }
 
 
-sub request_from_api {
+sub _request_from_api {
     my ( $self, %params ) = validated_hash(
         \@_,
         method	=> { isa => 'Str' },
@@ -470,30 +726,15 @@ sub request_from_api {
 
 1;
 
-
-# ABSTRACT: API interface to Zendesk
-
-=head1 NAME
-
-API::Zendesk
-
-=head1 DESCRIPTION
-
-Manage Zendesk connection, get tickets etc.
-
-
-=head1 METHODS
-
-=over 4
-
-
 =back
 
 =head1 COPYRIGHT
 
-Copyright 2015, Robin Clarke @ Elastic
+Copyright 2015, Robin Clarke 
 
 =head1 AUTHOR
 
-Robin Clarke <robin.clarke@elastic.co>
+Robin Clarke <robin@robinclarke.net>
+
+Jeremy Falling
 
