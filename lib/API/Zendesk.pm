@@ -218,11 +218,11 @@ sub search {
     $self->log->debug( "Searching: $params{query}" );
     my $path = '/search.json?query=' . uri_encode( $params{query} ) . "&sort_by=$params{sort_by}&sort_order=$params{sort_order}";
 
-    my %request_params = {
+    my %request_params = (
         field   => 'results',
         method  => 'get',
 	path    => $path,
-    };
+    );
     $request_params{size} = $params{size} if( $params{size} );
     my @results = $self->_paged_get_request_from_api( %request_params );
 
