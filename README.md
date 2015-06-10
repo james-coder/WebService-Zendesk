@@ -4,4 +4,4 @@ This module provides an interface to the Zendesk API.  It is currently a work in
 
 # Atribution
 
-Thanks to my super duper employer employer [Elastic.co](https://www.elastic.co/) for making development of this module possible and my colleague Jeremy Falling for help in development.
+Thanks to my super duper employer [Elastic.co](https://www.elastic.co/) for making development of this module possible and my colleague Jeremy Falling for help in development.
