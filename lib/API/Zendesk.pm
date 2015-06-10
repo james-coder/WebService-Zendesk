@@ -225,6 +225,7 @@ sub search {
     );
     $request_params{size} = $params{size} if( $params{size} );
     my @results = $self->_paged_get_request_from_api( %request_params );
+    # TODO - cache results if tickets, users or organizations
 
     $self->log->debug( "Got " . scalar( @results ) . " results from query" );
     return @results;
