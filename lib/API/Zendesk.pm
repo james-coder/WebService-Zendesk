@@ -84,14 +84,13 @@ has 'backoff_time' => (
 
 =item zendesk_api_url
 
-Optional. Default: https://elasticsearch.zendesk.com/api/v2
+Required.
 
 =cut
 has 'zendesk_api_url' => (
     is		=> 'ro',
     isa		=> 'Str',
     required	=> 1,
-    default	=> 'https://elasticsearch.zendesk.com/api/v2',
     );
 
 =item user_agent
