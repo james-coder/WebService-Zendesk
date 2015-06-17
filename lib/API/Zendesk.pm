@@ -691,10 +691,8 @@ sub _request_from_api {
     $self->log->debug( "Requesting from Zendesk ($params{method}): $url" );
     my $response;
     my $retry_count = 0;
+    my $retry = 1;
     do{
-        if( $retry_count > 0 ){
-            sleep( 10 );
-        }
         if( $params{method} =~ m/^get$/i ){
             $response = $self->user_agent->get( $url );
 
@@ -708,12 +706,29 @@ sub _request_from_api {
         }else{
             $self->log->logdie( "Unsupported request method: $params{method}" );
         }
-        if( not $response->is_success and $response->code == 429 ){
-            $self->log->warn( "Received a 429 (Too Many Requests) response... going to retry in " . $self->backoff_time . " seconds" );
-            $response = undef;
-            sleep( $self->backoff_time );
+        if( not $response->is_success ){
+            if(  $response->code == 503 ){
+                # Try to decode the response
+                try{
+                     my $data = decode_json( encode( 'utf8', $response->decoded_content ) );
+                     if( $data->{description} and $data->{description} =~ m/Please try again in a moment/ ){
+                         $self->log->warn( "Received a 503 (description: Please try again in a moment)... going to backoff and retry!" );
+                         $retry = 0;
+                     }
+                }catch{
+                    $self->log->error( $_ );
+                    $retry = 0;
+                };
+            }elsif( $response->code == 429 ){
+                $self->log->warn( "Received a 429 (Too Many Requests) response... going to backoff and retry!" );
+            }else{
+                $retry = 0;
+            }
+            if( $retry == 1 ){
+                sleep( $self->backoff_time );
+            }
         }
-    }while( not $response );
+    }while( $retry );
     if( not $response->is_success ){
 	$self->log->logdie( "Zendesk API Error: http status:".  $response->code .' '.  $response->message . ' Content: ' . $response->content);
     }
