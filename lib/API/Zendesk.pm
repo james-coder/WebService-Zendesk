@@ -725,10 +725,11 @@ sub _request_from_api {
                 $retry = 0;
             }
             if( $retry == 1 ){
+                $response = undef;
                 sleep( $self->backoff_time );
             }
         }
-    }while( $retry );
+    }while( $retry and not $response );
     if( not $response->is_success ){
 	$self->log->logdie( "Zendesk API Error: http status:".  $response->code .' '.  $response->message . ' Content: ' . $response->content);
     }
