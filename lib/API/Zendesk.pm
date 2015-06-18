@@ -564,7 +564,7 @@ Use the L<Update Organization|https://developer.zendesk.com/rest_api/docs/core/o
 
 =item organization_id
 
-Required.  Organization id to get
+Required.  Organization id to update
 
 =item details
 
@@ -652,6 +652,57 @@ sub list_organization_users {
     $self->log->debug( sprintf "Got %u users for organization: %u", scalar( @users ), $params{organization_id} );
 
     return @users;
+}
+
+=item update_user
+
+Use the L<Update User|https://developer.zendesk.com/rest_api/docs/core/users#update-user> interface.
+
+=over 4
+
+=item user_id
+
+Required.  User id to update
+
+=item details
+
+Required.  HashRef of the details to be updated.
+
+=item no_cache
+
+Disable cache set for this operation
+
+=back
+
+returns the
+=cut
+sub update_user {
+    my ( $self, %params ) = validated_hash(
+        \@_,
+        user_id         => { isa    => 'Int' },
+        details         => { isa    => 'HashRef' },
+        no_cache        => { isa    => 'Bool', optional => 1 }
+    );
+
+    my $body = {
+        "user" =>
+            $params{details}
+    };
+
+    my $encoded_body = encode_json( $body );
+    $self->log->trace( "Submitting:\n" . $encoded_body );
+    my $response = $self->_request_from_api(
+        method  => 'put',
+            path    => '/users/' . $params{user_id} . '.json',
+            body    => $encoded_body,
+        );
+    if( not $response or not $response->{user}{id} == $params{user_id} ){
+        $self->log->logdie( "Could not update user: $params{user_id}" );
+    }
+
+    $self->cache_set( 'user-' . $params{user_id}, $response->{user} ) unless( $params{no_cache} );
+
+    return $response->{user};
 }
 
 sub _paged_get_request_from_api {
@@ -753,5 +804,5 @@ Copyright 2015, Robin Clarke
 
 Robin Clarke <robin@robinclarke.net>
 
-Jeremy Falling
+Jeremy Falling <projects@falling.se>
 
