@@ -713,7 +713,6 @@ sub _request_from_api {
                      my $data = decode_json( encode( 'utf8', $response->decoded_content ) );
                      if( $data->{description} and $data->{description} =~ m/Please try again in a moment/ ){
                          $self->log->warn( "Received a 503 (description: Please try again in a moment)... going to backoff and retry!" );
-                         $retry = 0;
                      }
                 }catch{
                     $self->log->error( $_ );
@@ -721,6 +720,8 @@ sub _request_from_api {
                 };
             }elsif( $response->code == 429 ){
                 $self->log->warn( "Received a 429 (Too Many Requests) response... going to backoff and retry!" );
+            }elsif( $response->code == 500 and $response->decoded_content =~ m/Server closed connection without sending any data back/ ){
+                $self->log->warn( "Received a 500 (Server closed connection without sending any data)... going to backoff and retry!");
             }else{
                 $retry = 0;
             }
