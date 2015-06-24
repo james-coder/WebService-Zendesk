@@ -810,20 +810,22 @@ sub _request_from_api {
                      my $data = decode_json( encode( 'utf8', $response->decoded_content ) );
                      if( $data->{description} and $data->{description} =~ m/Please try again in a moment/ ){
                          $self->log->warn( "Received a 503 (description: Please try again in a moment)... going to backoff and retry!" );
-                         $retry = 0;
                      }
                 }catch{
                     $self->log->error( $_ );
                     $retry = 0;
                 };
             }elsif( $response->code == 429 ){
-		#ensure retry-after header exists and has valid data, otherwise use backoff time
+		
+                #ensure retry-after header exists and has valid data, otherwise use backoff time
 		if ($response->header('Retry-After') =~ /^\d+$/ ) {
 		    $retry_delay = $response->header('Retry-After');
 		}else {
 		    $retry_delay = $self->default_backoff;
 		}
 		$self->log->warn( "Received a 429 (Too Many Requests) response... going to backoff and retry in $retry_delay seconds!" );
+            }elsif( $response->code == 500 and $response->decoded_content =~ m/Server closed connection without sending any data back/ ){
+                $self->log->warn( "Received a 500 (Server closed connection without sending any data)... going to backoff and retry!");
             }else{
                 $retry = 0;
             }
