@@ -12,6 +12,8 @@ use YAML;
 use URI::Encode qw/uri_encode/;
 use Encode;
 
+our $VERSION = 0.012;
+
 =head1 NAME
 
 API::Zendesk
