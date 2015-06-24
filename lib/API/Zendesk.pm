@@ -67,15 +67,12 @@ has 'zendesk_username' => (
     isa         => 'Str',
     required    => 1,
     );
-	
-=item backoff_time
 
+=item default_backoff
 Optional.  Default: 10
-
-Time in seconds to back off before retrying request if a http 429 (Too Many Requests) response is received. 
-
+Time in seconds to back off before retrying request if a http 429 (Too Many Requests) response is received. This is only used if the Retry-Time header is not provided by the api.
 =cut
-has 'backoff_time' => (
+has 'default_backoff' => (
     is          => 'ro',
     isa         => 'Int',
     required    => 1,
@@ -398,6 +395,7 @@ sub update_ticket {
     );
 
     my $encoded_body = encode_json( $params{body} );
+    $self->log->trace( "Submitting:\n" . $encoded_body );
     my $response = $self->_request_from_api(
             method  => 'put',
 	    path    => '/tickets/' . $params{ticket_id} . '.json',
@@ -564,7 +562,7 @@ Use the L<Update Organization|https://developer.zendesk.com/rest_api/docs/core/o
 
 =item organization_id
 
-Required.  Organization id to get
+Required.  Organization id to update
 
 =item details
 
@@ -654,6 +652,104 @@ sub list_organization_users {
     return @users;
 }
 
+=item update_user
+
+Use the L<Update User|https://developer.zendesk.com/rest_api/docs/core/users#update-user> interface.
+
+=over 4
+
+=item user_id
+
+Required.  User id to update
+
+=item details
+
+Required.  HashRef of the details to be updated.
+
+=item no_cache
+
+Disable cache set for this operation
+
+=back
+
+returns the
+=cut
+sub update_user {
+    my ( $self, %params ) = validated_hash(
+        \@_,
+        user_id         => { isa    => 'Int' },
+        details         => { isa    => 'HashRef' },
+        no_cache        => { isa    => 'Bool', optional => 1 }
+    );
+
+    my $body = {
+        "user" =>
+            $params{details}
+    };
+
+    my $encoded_body = encode_json( $body );
+    $self->log->trace( "Submitting:\n" . $encoded_body );
+    my $response = $self->_request_from_api(
+        method  => 'put',
+            path    => '/users/' . $params{user_id} . '.json',
+            body    => $encoded_body,
+        );
+    if( not $response or not $response->{user}{id} == $params{user_id} ){
+        $self->log->logdie( "Could not update user: $params{user_id}" );
+    }
+
+    $self->cache_set( 'user-' . $params{user_id}, $response->{user} ) unless( $params{no_cache} );
+
+    return $response->{user};
+}
+
+=item list_user_assigned_tickets
+
+Use the L<List assigned tickets|https://developer.zendesk.com/rest_api/docs/core/tickets#listing-tickets> interface.
+
+=over 4
+
+=item user_id
+
+Required.  User id to get assigned tickets from
+
+=item no_cache
+
+Disable cache set/get for this operation
+
+=back
+
+Returns array of tickets
+
+=cut
+sub list_user_assigned_tickets {
+    my ( $self, %params ) = validated_hash(
+        \@_,
+        user_id	=> { isa    => 'Int' },
+        no_cache        => { isa    => 'Bool', optional => 1 }
+    );
+
+    my $tickets_arrayref;
+    $tickets_arrayref = $self->cache_get( 'user-assigned -tickets' . $params{user_id} ) unless( $params{no_cache} );
+    my @tickets;
+    if( $tickets_arrayref ){
+        @tickets = @{ $tickets_arrayref };
+        $self->log->debug( sprintf "Tickets from cache for user: %u", scalar( @tickets ), $params{user_id} );
+    }else{
+        $self->log->debug( "Requesting tickets fresh for user: $params{user_id}" );
+        @tickets = $self->_paged_get_request_from_api(
+            field   => 'tickets',
+            method  => 'get',
+            path    => '/users/' . $params{user_id} . '/tickets/assigned.json',
+        );
+
+	$self->cache_set( 'user-assigned -tickets' . $params{user_id}, \@tickets ) unless( $params{no_cache} );
+    }
+    $self->log->debug( sprintf "Got %u assigned tickets for user: %u", scalar( @tickets ), $params{user_id} );
+
+    return @tickets;
+}
+
 sub _paged_get_request_from_api {
     my ( $self, %params ) = validated_hash(
         \@_,
@@ -692,6 +788,7 @@ sub _request_from_api {
     my $response;
     my $retry_count = 0;
     my $retry = 1;
+    my $retry_delay = 0;
     do{
         if( $params{method} =~ m/^get$/i ){
             $response = $self->user_agent->get( $url );
@@ -719,7 +816,14 @@ sub _request_from_api {
                     $retry = 0;
                 };
             }elsif( $response->code == 429 ){
-                $self->log->warn( "Received a 429 (Too Many Requests) response... going to backoff and retry!" );
+		
+                #ensure retry-after header exists and has valid data, otherwise use backoff time
+		if ($response->header('Retry-After') =~ /^\d+$/ ) {
+		    $retry_delay = $response->header('Retry-After');
+		}else {
+		    $retry_delay = $self->default_backoff;
+		}
+		$self->log->warn( "Received a 429 (Too Many Requests) response... going to backoff and retry in $retry_delay seconds!" );
             }elsif( $response->code == 500 and $response->decoded_content =~ m/Server closed connection without sending any data back/ ){
                 $self->log->warn( "Received a 500 (Server closed connection without sending any data)... going to backoff and retry!");
             }else{
@@ -727,7 +831,7 @@ sub _request_from_api {
             }
             if( $retry == 1 ){
                 $response = undef;
-                sleep( $self->backoff_time );
+                sleep( $retry_delay );
             }
         }
     }while( $retry and not $response );
@@ -754,5 +858,5 @@ Copyright 2015, Robin Clarke
 
 Robin Clarke <robin@robinclarke.net>
 
-Jeremy Falling
+Jeremy Falling <projects@falling.se>
 
