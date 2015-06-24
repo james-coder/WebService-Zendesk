@@ -67,7 +67,17 @@ has 'zendesk_username' => (
     isa         => 'Str',
     required    => 1,
     );
-	
+
+=item default_backoff
+Optional.  Default: 10
+Time in seconds to back off before retrying request if a http 429 (Too Many Requests) response is received. This is only used if the Retry-Time header is not provided by the api.
+=cut
+has 'default_backoff' => (
+    is          => 'ro',
+    isa         => 'Int',
+    required    => 1,
+    default     => 10,
+    );
 
 =item zendesk_api_url
 
@@ -778,7 +788,7 @@ sub _request_from_api {
     my $response;
     my $retry_count = 0;
     my $retry = 1;
-    my $retryDelay = 1;
+    my $retry_delay = 0;
     do{
         if( $params{method} =~ m/^get$/i ){
             $response = $self->user_agent->get( $url );
@@ -807,15 +817,20 @@ sub _request_from_api {
                     $retry = 0;
                 };
             }elsif( $response->code == 429 ){
+		#ensure retry-after header exists and has valid data, otherwise use backoff time
+		if ($response->header('Retry-After') =~ /^\d+$/ ) {
+		    $retry_delay = $response->header('Retry-After');
+		}else {
+		    $retry_delay = $self->default_backoff;
+		}
 		#get Retry-After header and use that for the retry time
-		$retryDelay = $response->header('Retry-After');
-		$self->log->warn( "Received a 429 (Too Many Requests) response... going to backoff and retry in $retryDelay seconds!" );
+		$self->log->warn( "Received a 429 (Too Many Requests) response... going to backoff and retry in $retry_delay seconds!" );
             }else{
                 $retry = 0;
             }
             if( $retry == 1 ){
                 $response = undef;
-                sleep( $retryDelay );
+                sleep( $retry_delay );
             }
         }
     }while( $retry and not $response );
