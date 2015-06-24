@@ -730,7 +730,7 @@ sub list_user_assigned_tickets {
     );
 
     my $tickets_arrayref;
-    $tickets_arrayref = $self->cache_get( 'user-assigned -tickets' . $params{user_id} ) unless( $params{no_cache} );
+    $tickets_arrayref = $self->cache_get( 'user-assigned-tickets-' . $params{user_id} ) unless( $params{no_cache} );
     my @tickets;
     if( $tickets_arrayref ){
         @tickets = @{ $tickets_arrayref };
@@ -743,7 +743,7 @@ sub list_user_assigned_tickets {
             path    => '/users/' . $params{user_id} . '/tickets/assigned.json',
         );
 
-	$self->cache_set( 'user-assigned -tickets' . $params{user_id}, \@tickets ) unless( $params{no_cache} );
+	$self->cache_set( 'user-assigned-tickets-' . $params{user_id}, \@tickets ) unless( $params{no_cache} );
     }
     $self->log->debug( sprintf "Got %u assigned tickets for user: %u", scalar( @tickets ), $params{user_id} );
 
@@ -786,9 +786,9 @@ sub _request_from_api {
     my $url = $self->zendesk_api_url . $params{path};
     $self->log->debug( "Requesting from Zendesk ($params{method}): $url" );
     my $response;
-    my $retry_count = 0;
+    
     my $retry = 1;
-    my $retry_delay = 0;
+    my $retry_delay = $self->default_backoff;
     do{
         if( $params{method} =~ m/^get$/i ){
             $response = $self->user_agent->get( $url );
@@ -809,19 +809,16 @@ sub _request_from_api {
                 try{
                      my $data = decode_json( encode( 'utf8', $response->decoded_content ) );
                      if( $data->{description} and $data->{description} =~ m/Please try again in a moment/ ){
-                         $self->log->warn( "Received a 503 (description: Please try again in a moment)... going to backoff and retry!" );
+                         $self->log->warn( "Received a 503 (description: Please try again in a moment)... going to retry in $retry_delay!" );
                      }
                 }catch{
                     $self->log->error( $_ );
                     $retry = 0;
                 };
             }elsif( $response->code == 429 ){
-		
-                #ensure retry-after header exists and has valid data, otherwise use backoff time
-		if ($response->header('Retry-After') =~ /^\d+$/ ) {
+                # if retry-after header exists and has valid data use this for backoff time
+		if( $response->header( 'Retry-After' ) and $response->header('Retry-After') =~ /^\d+$/ ) {
 		    $retry_delay = $response->header('Retry-After');
-		}else {
-		    $retry_delay = $self->default_backoff;
 		}
 		$self->log->warn( "Received a 429 (Too Many Requests) response... going to backoff and retry in $retry_delay seconds!" );
             }elsif( $response->code == 500 and $response->decoded_content =~ m/Server closed connection without sending any data back/ ){
@@ -839,8 +836,6 @@ sub _request_from_api {
 	$self->log->logdie( "Zendesk API Error: http status:".  $response->code .' '.  $response->message . ' Content: ' . $response->content);
     }
     $self->log->trace( "Zendesk API Error: http status:".  $response->code .' '.  $response->message . ' Content: ' . $response->content);
-
-    #my $json_string = $response->decoded_content();
 
     return decode_json( encode( 'utf8', $response->decoded_content ) );
 }
