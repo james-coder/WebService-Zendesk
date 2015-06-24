@@ -68,19 +68,6 @@ has 'zendesk_username' => (
     required    => 1,
     );
 	
-=item backoff_time
-
-Optional.  Default: 10
-
-Time in seconds to back off before retrying request if a http 429 (Too Many Requests) response is received. 
-
-=cut
-has 'backoff_time' => (
-    is          => 'ro',
-    isa         => 'Int',
-    required    => 1,
-    default     => 10,
-    );
 
 =item zendesk_api_url
 
@@ -398,6 +385,7 @@ sub update_ticket {
     );
 
     my $encoded_body = encode_json( $params{body} );
+    $self->log->trace( "Submitting:\n" . $encoded_body );
     my $response = $self->_request_from_api(
             method  => 'put',
 	    path    => '/tickets/' . $params{ticket_id} . '.json',
@@ -790,6 +778,7 @@ sub _request_from_api {
     my $response;
     my $retry_count = 0;
     my $retry = 1;
+    my $retryDelay = 1;
     do{
         if( $params{method} =~ m/^get$/i ){
             $response = $self->user_agent->get( $url );
@@ -818,13 +807,15 @@ sub _request_from_api {
                     $retry = 0;
                 };
             }elsif( $response->code == 429 ){
-                $self->log->warn( "Received a 429 (Too Many Requests) response... going to backoff and retry!" );
+		#get Retry-After header and use that for the retry time
+		$retryDelay = $response->header('Retry-After');
+		$self->log->warn( "Received a 429 (Too Many Requests) response... going to backoff and retry in $retryDelay seconds!" );
             }else{
                 $retry = 0;
             }
             if( $retry == 1 ){
                 $response = undef;
-                sleep( $self->backoff_time );
+                sleep( $retryDelay );
             }
         }
     }while( $retry and not $response );
