@@ -823,7 +823,6 @@ sub _request_from_api {
 		}else {
 		    $retry_delay = $self->default_backoff;
 		}
-		#get Retry-After header and use that for the retry time
 		$self->log->warn( "Received a 429 (Too Many Requests) response... going to backoff and retry in $retry_delay seconds!" );
             }else{
                 $retry = 0;
