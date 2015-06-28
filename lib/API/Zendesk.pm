@@ -394,6 +394,7 @@ sub update_ticket {
         \@_,
         ticket_id	=> { isa    => 'Int' },
 	body		=> { isa    => 'HashRef' },
+	no_cache        => { isa    => 'Bool', optional => 1 }
     );
 
     my $encoded_body = encode_json( $params{body} );
@@ -403,6 +404,7 @@ sub update_ticket {
 	    path    => '/tickets/' . $params{ticket_id} . '.json',
 	    body    => $encoded_body,
 	);
+    $self->cache_set( 'ticket-' . $params{ticket_id}, $response ) unless( $params{no_cache} );
     return $response;
 }
 
@@ -452,6 +454,70 @@ sub get_ticket {
     return $ticket;
 }
 
+=item get_many_tickets
+
+Access L<Show Many Organizations|https://developer.zendesk.com/rest_api/docs/core/organizations#show-many-organizations> interface.
+
+=over 4
+
+=item ticket_ids
+
+Required.  ArrayRef of ticket ids to get
+
+=item no_cache
+
+Disable cache get/set for this operation
+
+=back
+
+Returns an array of ticket HashRefs
+
+=cut
+sub get_many_tickets {
+    my ( $self, %params ) = validated_hash(
+        \@_,
+        ticket_ids    => { isa    => 'ArrayRef' },
+        no_cache      => { isa    => 'Bool', optional => 1 }
+    );
+
+    # First see if we already have any of the ticket in our cache - less to get
+    my @tickets;
+    my @get_tickets;
+    foreach my $ticket_id ( @{ $params{ticket_ids} } ){
+        my $ticket;
+        $ticket = $self->cache_get( 'ticket-' . $ticket_id ) unless( $params{no_cache} );
+        if( $ticket ){
+            $self->log->debug( "Found ticket in cache: $ticket_id" );
+            push( @tickets, $ticket );
+        }else{
+            push( @get_tickets, $ticket_id );
+        }
+    }
+
+    # If there are any tickets remaining, get these with a bulk request
+    if( scalar( @get_tickets ) > 0 ){
+	$self->log->debug( "Tickets not in cache, requesting fresh: " . join( ',', @get_tickets ) );
+
+	#limit each request to 100 tickets per api spec
+	my @split_tickets;
+	push @split_tickets, [ splice @get_tickets, 0, 100 ] while @get_tickets;
+
+	foreach my $cur_tickets (@split_tickets) {
+	    my @result= $self->_paged_get_request_from_api(
+		field   => 'tickets',
+		method  => 'get',
+		path    => '/tickets/show_many.json?ids=' . join( ',', @{ $cur_tickets } ),
+		);
+	    foreach( @result ){
+		$self->log->debug( "Writing ticket to cache: $_->{id}" );
+		$self->cache_set( 'ticket-' . $_->{id}, $_ ) unless( $params{no_cache} );
+		push( @tickets, $_ );
+	    }
+	}
+    }
+    return @tickets;
+}
+
 =item get_organizationt
 
 Get a single organization by accessing L<Getting Organizations|https://developer.zendesk.com/rest_api/docs/core/organizations#list-organizations>
@@ -479,7 +545,7 @@ sub get_organization {
         organization_id	=> { isa    => 'Int' },
         no_cache        => { isa    => 'Bool', optional => 1 }
     );
-    
+
     my $organization;
     $organization = $self->cache_get( 'organization-' . $params{organization_id} ) unless( $params{no_cache} );
     if( not $organization ){
@@ -523,7 +589,7 @@ sub get_many_organizations {
         organization_ids    => { isa    => 'ArrayRef' },
         no_cache            => { isa    => 'Bool', optional => 1 }
     );
-    
+
     # First see if we already have any of the organizations in our cache - less to get
     my @organizations;
     my @get_organizations;
@@ -545,7 +611,18 @@ sub get_many_organizations {
 	    field   => 'organizations',
             method  => 'get',
 	    path    => '/organizations/show_many.json?ids=' . join( ',', @get_organizations ),
-	);
+	    );
+	#if an org is not found it is dropped from the results so we need to check for this and show an warning
+	if ( scalar ( @result ) < scalar ( @get_organizations ) ) {
+	    for (my $i=0; $i < scalar ( @get_organizations ); $i++) {
+		my ($org_found) = grep {
+		    $_->{id} == $get_organizations[$i]
+		} @result;
+		unless ( $org_found ) {
+		    $self->log->warn( "The following organization id was not found in Zendesk: $get_organizations[$i] ");
+		}
+	    }
+	}
         foreach( @result ){
             $self->log->debug( "Writing organization to cache: $_->{id}" );
             $self->cache_set( 'organization-' . $_->{id}, $_ ) unless( $params{no_cache} );
@@ -631,28 +708,112 @@ sub list_organization_users {
         \@_,
         organization_id	=> { isa    => 'Int' },
         no_cache        => { isa    => 'Bool', optional => 1 }
-    );
+	);
 
+    #for caching we store an array of tickets under the user, then look at the ticket cache
     my $users_arrayref;
     $users_arrayref = $self->cache_get( 'organization-users-' . $params{organization_id} ) unless( $params{no_cache} );
     my @users;
+    my @user_list;
     if( $users_arrayref ){
-        @users = @{ $users_arrayref };
-        $self->log->debug( sprintf "Users from cache for organization: %u", scalar( @users ), $params{organization_id} );
+        @user_list = @{ $users_arrayref };
+        $self->log->debug( sprintf "Users from cache for user: %u", scalar( @user_list ), $params{user_id} );
+	#get the data for each ticket in the ticket array
+	my @ticket_data = $self->get_many_users (
+	    user_ids => \@user_list,
+	    no_cache => $params{no_cache},
+	    );
+	push (@users, @ticket_data);
+
     }else{
-        $self->log->debug( "Requesting users fresh for organization: $params{organization_id}" );
+        $self->log->debug( "Requesting users fresh for user: $params{organization_id}" );
         @users = $self->_paged_get_request_from_api(
             field   => 'users',
             method  => 'get',
             path    => '/organizations/' . $params{organization_id} . '/users.json',
         );
 
-	$self->cache_set( 'organization-users-' . $params{organization_id}, \@users ) unless( $params{no_cache} );
+	foreach (@users) {
+	    push( @user_list, $_->{id});
+	}
+
+	$self->cache_set( 'organization-users-' . $params{organization_id}, \@user_list ) unless( $params{no_cache} );
+        foreach( @users ){
+	    $self->log->debug( "Writing ticket to cache: $_->{id}" );
+	    $self->cache_set( 'user-' . $_->{id}, $_ ) unless( $params{no_cache} );
+        }
     }
     $self->log->debug( sprintf "Got %u users for organization: %u", scalar( @users ), $params{organization_id} );
 
     return @users;
 }
+
+
+=item get_many_users
+
+Access L<Show Many Users|https://developer.zendesk.com/rest_api/docs/core/users#show-many-users> interface.
+
+=over 4
+
+=item user_ids
+
+Required.  ArrayRef of user ids to get
+
+=item no_cache
+
+Disable cache get/set for this operation
+
+=back
+
+Returns an array of user HashRefs
+
+=cut
+
+sub get_many_users {
+    my ( $self, %params ) = validated_hash(
+        \@_,
+        user_ids    => { isa    => 'ArrayRef' },
+        no_cache      => { isa    => 'Bool', optional => 1 }
+    );
+
+    # First see if we already have any of the user in our cache - less to get
+    my @users;
+    my @get_users;
+    foreach my $user_id ( @{ $params{user_ids} } ){
+        my $user;
+        $user = $self->cache_get( 'user-' . $user_id ) unless( $params{no_cache} );
+        if( $user ){
+            $self->log->debug( "Found user in cache: $user_id" );
+            push( @users, $user );
+        }else{
+            push( @get_users, $user_id );
+        }
+    }
+
+    # If there are any users remaining, get these with a bulk request
+    if( scalar( @get_users ) > 0 ){
+	$self->log->debug( "Users not in cache, requesting fresh: " . join( ',', @get_users ) );
+
+	#limit each request to 100 users per api spec
+	my @split_users;
+	push @split_users, [ splice @get_users, 0, 100 ] while @get_users;
+
+	foreach my $cur_users (@split_users) {
+	    my @result= $self->_paged_get_request_from_api(
+		field   => 'users',
+		method  => 'get',
+		path    => '/users/show_many.json?ids=' . join( ',', @{ $cur_users } ),
+		);
+	    foreach( @result ){
+		$self->log->debug( "Writing user to cache: $_->{id}" );
+		$self->cache_set( 'user-' . $_->{id}, $_ ) unless( $params{no_cache} );
+		push( @users, $_ );
+	    }
+	}
+    }
+    return @users;
+}
+
 
 =item update_user
 
@@ -685,8 +846,7 @@ sub update_user {
     );
 
     my $body = {
-        "user" =>
-            $params{details}
+        "user" => $params{details}
     };
 
     my $encoded_body = encode_json( $body );
@@ -728,28 +888,73 @@ sub list_user_assigned_tickets {
     my ( $self, %params ) = validated_hash(
         \@_,
         user_id	=> { isa    => 'Int' },
-        no_cache        => { isa    => 'Bool', optional => 1 }
-    );
+        no_cache => { isa    => 'Bool', optional => 1 }
+	);
 
+    #for caching we store an array of tickets under the user, then look at the ticket cache
     my $tickets_arrayref;
     $tickets_arrayref = $self->cache_get( 'user-assigned-tickets-' . $params{user_id} ) unless( $params{no_cache} );
     my @tickets;
+    my @ticket_list;
     if( $tickets_arrayref ){
-        @tickets = @{ $tickets_arrayref };
-        $self->log->debug( sprintf "Tickets from cache for user: %u", scalar( @tickets ), $params{user_id} );
+        @ticket_list = @{ $tickets_arrayref };
+        $self->log->debug( sprintf "Tickets from cache for user: %u", scalar( @ticket_list ), $params{user_id} );
+	#get the data for each ticket in the ticket array
+	my @ticket_data = $self->get_many_tickets (
+	    ticket_ids => \@ticket_list,
+	    no_cache => $params{no_cache},
+	    );
+	push (@tickets, @ticket_data);
+
     }else{
         $self->log->debug( "Requesting tickets fresh for user: $params{user_id}" );
         @tickets = $self->_paged_get_request_from_api(
             field   => 'tickets',
             method  => 'get',
             path    => '/users/' . $params{user_id} . '/tickets/assigned.json',
-        );
+	    );
 
-	$self->cache_set( 'user-assigned-tickets-' . $params{user_id}, \@tickets ) unless( $params{no_cache} );
+	foreach (@tickets) {
+	    push( @ticket_list, $_->{id});
+	}
+
+	$self->cache_set( 'user-assigned-tickets-' . $params{user_id}, \@ticket_list ) unless( $params{no_cache} );
+        foreach( @tickets ){
+	    $self->log->debug( "Writing ticket to cache: $_->{id}" );
+	    $self->cache_set( 'ticket-' . $_->{id}, $_ ) unless( $params{no_cache} );
+        }
     }
     $self->log->debug( sprintf "Got %u assigned tickets for user: %u", scalar( @tickets ), $params{user_id} );
 
     return @tickets;
+}
+
+
+=item clear_cache_object_id
+
+Clears an object from the cache.
+
+=over 4
+
+=item user_id
+
+Required.  Object id to clear from the cache.
+
+=back
+
+Returns nothing
+
+=cut
+sub clear_cache_object_id {
+    my ( $self, %params ) = validated_hash(
+        \@_,
+        object_id	=> { isa    => 'Str' }
+	);
+
+    $self->log->debug( "Clearing cache id: $params{object_id}" );
+    my $foo = $self->cache_del( $params{object_id} );
+
+    return;
 }
 
 sub _paged_get_request_from_api {
