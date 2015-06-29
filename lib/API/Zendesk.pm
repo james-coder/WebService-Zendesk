@@ -404,7 +404,7 @@ sub update_ticket {
 	    path    => '/tickets/' . $params{ticket_id} . '.json',
 	    body    => $encoded_body,
 	);
-    $self->cache_set( 'ticket-' . $params{ticket_id}, $response ) unless( $params{no_cache} );
+    $self->cache_set( 'ticket-' . $params{ticket_id}, $response->{ticket} ) unless( $params{no_cache} );
     return $response;
 }
 
