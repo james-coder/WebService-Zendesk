@@ -1015,9 +1015,7 @@ sub _request_from_api {
 		    $retry_delay = $response->header('Retry-After');
 		}
 		$self->log->warn( "Received a 429 (Too Many Requests) response... going to backoff and retry in $retry_delay seconds!" );
-            }elsif( $response->code == 500 and (
-                $response->decoded_content =~ m/Server closed connection without sending any data back/ or 
-            }elsif( $response->code == 500 and $response->decoded_content =~ m/Server closed connection without sending any data back/ or 
+            }elsif( $response->code == 500 and $response->decoded_content =~ m/Server closed connection without sending any data back/  ){
                 $self->log->warn( "Received a 500 (Server closed connection without sending any data)... going to backoff and retry!");
             }elsif( $response->code == 500 and $response->decoded_content =~ m/read timeout/ ){
                 $self->log->warn( "Received a 500 (read timeout)... going to backoff and retry!");
