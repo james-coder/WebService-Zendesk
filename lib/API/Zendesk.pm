@@ -12,7 +12,7 @@ use YAML;
 use URI::Encode qw/uri_encode/;
 use Encode;
 
-our $VERSION = 0.014;
+our $VERSION = 0.015;
 
 =head1 NAME
 
