@@ -712,24 +712,25 @@ sub list_organization_users {
     # for caching we store an array of user ids for each organization and attempt to get these from the cache
     my $user_ids_arrayref = $self->cache_get( 'organization-users-ids-' . $params{organization_id} ) unless( $params{no_cache} );
     my @users;
+
     if( $user_ids_arrayref ){
         $self->log->debug( sprintf "Users from cache for organization_id: %u", scalar(  @{ $user_ids_arrayref } ), $params{organization_id} );
-	#get the data for each ticket in the ticket array
-	my @ticket_data = $self->get_many_users (
+	#get the data for each user in the ticket array
+	my @user_data = $self->get_many_users (
 	    user_ids => $user_ids_arrayref,
 	    no_cache => $params{no_cache},
 	    );
-	push (@users, @ticket_data);
+	push (@users, @user_data);
 
     }else{
-        $self->log->debug( "Requesting users fresh for user: $params{organization_id}" );
+        $self->log->debug( "Requesting users fresh for organization: $params{organization_id}" );
         @users = $self->_paged_get_request_from_api(
             field   => 'users',
             method  => 'get',
             path    => '/organizations/' . $params{organization_id} . '/users.json',
         );
 
-        $user_ids_arrayref = [ grep{ $_->{id} } @users ];
+	$user_ids_arrayref = [ map{ $_->{id} } @users ];
 
 	$self->cache_set( 'organization-users-ids-' . $params{organization_id}, $user_ids_arrayref ) unless( $params{no_cache} );
         foreach( @users ){
@@ -902,7 +903,7 @@ sub list_user_assigned_tickets {
             method  => 'get',
             path    => '/users/' . $params{user_id} . '/tickets/assigned.json',
 	    );
-        $ticket_ids_arrayref = [ grep{ $_->{id} } @tickets ];
+	$ticket_ids_arrayref = [ map{ $_->{id} } @tickets ];
 
 	$self->cache_set( 'user-assigned-tickets-ids-' . $params{user_id}, $ticket_ids_arrayref ) unless( $params{no_cache} );
 
