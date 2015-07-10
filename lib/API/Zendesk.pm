@@ -116,6 +116,14 @@ has '_zendesk_credentials' => (
     lazy	=> 1,
     builder	=> '_build_zendesk_credentials',
     );
+    
+has 'default_headers' => (
+    is		=> 'ro',
+    isa		=> 'HTTP::Headers',
+    required	=> 1,
+    lazy	=> 1,
+    builder	=> '_build_default_headers',
+    );
 
 sub _build_user_agent {
     my $self = shift;
@@ -123,10 +131,17 @@ sub _build_user_agent {
     my $ua = LWP::UserAgent->new(
 	keep_alive	=> 1
     );
-    $ua->default_header( 'Content-Type'	    => "application/json" );
-    $ua->default_header( 'Accept'	    => "application/json" );
-    $ua->default_header( 'Authorization'    => "Basic " . $self->_zendesk_credentials );
+   # $ua->default_headers( $self->default_headers );
     return $ua;
+}
+
+sub _build_default_headers {
+    my $self = shift;
+    my $h = HTTP::Headers->new();
+    $h->header( 'Content-Type'	=> "application/json" );
+    $h->header( 'Accept'	=> "application/json" );
+    $h->header( 'Authorization' => "Basic " . $self->_zendesk_credentials );
+    return $h;
 }
 
 sub _build_zendesk_credentials {
@@ -314,10 +329,13 @@ sub download_attachment {
     }
     
     # Empty headers so we don't get a http 406 error
-    my $headers = HTTP::Headers->new;
-    my $request = HTTP::Request->new( 'GET', $params{attachment}{content_url}, $headers );
-    my $response = $self->_request_from_api(
-        request => $request,
+    my $headers = $self->default_headers->clone();
+    $headers->header( 'Content-Type'  => '' );
+    $headers->header( 'Accept'        => '' );
+    $self->_request_from_api(
+        method      => 'GET',
+        uri         => $params{attachment}{content_url},
+        headers     => $headers,
         fields  => { ':content_file' => $target },
         );
     return $target;
@@ -398,12 +416,12 @@ sub update_ticket {
 
     my $encoded_body = encode_json( $params{body} );
     $self->log->trace( "Submitting:\n" . $encoded_body ) if $self->log->is_trace;
-    my $request = HTTP::Request->new(
-        'PUT',  '/tickets/' . $params{ticket_id} . '.json',
-        );
-    $request->content( $encoded_body );
 
-    my $response = $self->_request_from_api( request => $request );
+    my $response = $self->_request_from_api(
+        method          => 'PUT',
+        path            => '/tickets/' . $params{ticket_id} . '.json',
+        body            => $encoded_body,
+        );
     $self->cache_set( 'ticket-' . $params{ticket_id}, $response->{ticket} ) unless( $params{no_cache} );
     return $response;
 }
@@ -439,8 +457,10 @@ sub get_ticket {
     $ticket = $self->cache_get( 'ticket-' . $params{ticket_id} ) unless( $params{no_cache} );
     if( not $ticket ){
 	$self->log->debug( "Ticket info not cached, requesting fresh: $params{ticket_id}" );
-        my $request = HTTP::Request->new( 'GET', '/tickets/' . $params{ticket_id} . '.json' );
-	my $info = $self->_request_from_api( request => $request );
+	my $info = $self->_request_from_api(
+            method      => 'GET',
+            path        => '/tickets/' . $params{ticket_id} . '.json',
+            );
 	
 	if( not $info or not $info->{ticket} ){
 	    $self->log->logdie( "Could not get ticket info for ticket: $params{ticket_id}" );
@@ -548,8 +568,10 @@ sub get_organization {
     $organization = $self->cache_get( 'organization-' . $params{organization_id} ) unless( $params{no_cache} );
     if( not $organization ){
 	$self->log->debug( "Organization info not in cache, requesting fresh: $params{organization_id}" );
-        my $request = HTTP::Request->new( 'GET', '/organizations/' . $params{organization_id} . '.json' );
-	my $info = $self->_request_from_api( 'request' => $request );
+	my $info = $self->_request_from_api(
+            method      => 'GET',
+            path        => '/organizations/' . $params{organization_id} . '.json',
+            );
 	if( not $info or not $info->{organization} ){
 	    $self->log->logdie( "Could not get organization info for organization: $params{organization_id}" );
 	}
@@ -665,9 +687,11 @@ sub update_organization {
 
     my $encoded_body = encode_json( $body );
     $self->log->trace( "Submitting:\n" . $encoded_body ) if $self->log->is_trace;
-    my $request = HTTP::Request->new( 'PUT', '/organizations/' . $params{organization_id} . '.json' );
-    $request->content( $encoded_body );
-    my $response = $self->_request_from_api( request => $request );
+    my $response = $self->_request_from_api(
+        method      => 'PUT',
+        path        => '/organizations/' . $params{organization_id} . '.json',
+        body        => $encoded_body,
+        );
     if( not $response or not $response->{organization}{id} == $params{organization_id} ){
 	$self->log->logdie( "Could not update organization: $params{organization_id}" );
     }
@@ -840,9 +864,12 @@ sub update_user {
 
     my $encoded_body = encode_json( $body );
     $self->log->trace( "Submitting:\n" . $encoded_body ) if $self->log->is_trace;
-    my $request = HTTP::Request->new( 'PUT', '/users/' . $params{user_id} . '.json' );
-    $request->content( $encoded_body );
-    my $response = $self->_request_from_api( request => $request );
+    my $response = $self->_request_from_api(
+        method      => 'PUT',
+        path        => '/users/' . $params{user_id} . '.json',
+        body        => $encoded_body,
+        );
+
     if( not $response or not $response->{user}{id} == $params{user_id} ){
         $self->log->logdie( "Could not update user: $params{user_id}" );
     }
@@ -950,8 +977,10 @@ sub _paged_get_request_from_api {
     my $page = 1;
     my $response = undef;
     do{
-        my $request = HTTP::Request->new( 'GET', $params{path} . ( $params{path} =~ m/\?/ ? '&' : '?' ) . 'page=' . $page );
-        $response = $self->_request_from_api( request => $request );
+        $response = $self->_request_from_api(
+            method      => 'GET',
+            path        => $params{path} . ( $params{path} =~ m/\?/ ? '&' : '?' ) . 'page=' . $page,
+            );
 	push( @results, @{ $response->{$params{field} } } );
 	$page++;
       }while( $response->{next_page} and ( not $params{size} or scalar( @results ) < $params{size} ) );
@@ -963,14 +992,34 @@ sub _paged_get_request_from_api {
 sub _request_from_api {
     my ( $self, %params ) = validated_hash(
         \@_,
-        request => { isa => 'HTTP::Request' },
+        method	=> { isa => 'Str' },
+	path	=> { isa => 'Str', optional => 1 },
+        uri     => { isa => 'Str', optional => 1 },
+        body    => { isa => 'Str', optional => 1 },
+        headers => { isa => 'HTTP::Headers', optional => 1 },
         fields  => { isa => 'HashRef', optional => 1 },
         
     );
-    my $url = $self->zendesk_api_url . $params{path};
-    $self->log->debug( "Requesting from Zendesk ($params{method}): $url" );
+    my $url;
+    if( $params{uri} ){
+        $url = $params{uri};
+    }elsif( $params{path} ){
+        $url =  $self->zendesk_api_url . $params{path};
+    }else{
+        $self->log->logdie( "Cannot request without either a path or uri" );
+    }
+
+    my $request = HTTP::Request->new(
+        $params{method},
+        $url,
+        $params{headers} || $self->default_headers,
+        );
+    $request->content( $params{body} ) if( $params{body} );
+
+    $self->log->debug( "Requesting from Zendesk: " . $request->uri );
+    $self->log->trace( "Request:\n" . Dump( $request ) ) if $self->log->is_trace;
+
     my $response;
-    
     my $retry = 1;
     my $retry_delay = $self->default_backoff;
     do{
@@ -985,12 +1034,13 @@ sub _request_from_api {
             foreach( keys( %{ $headers } ) ){
                 $fields{$_} = $headers->{$_};
             }
+            $self->log->trace( "Fields:\n" . Dump( \%fields ) );
             $response = $self->user_agent->get(
-                $params{request}->uri(),
+                $request->uri(),
                 %fields,
             );
         }else{
-            $response = $self->user_agent->request( $params{request} );
+            $response = $self->user_agent->request( $request );
         }
         if( not $response->is_success ){
             if(  $response->code == 503 ){
@@ -1025,12 +1075,15 @@ sub _request_from_api {
             }
         }
     }while( $retry and not $response );
+
+    $self->log->trace( "Zendesk Response:\n", Dump( $response ) ) if $self->log->is_trace;
     if( not $response->is_success ){
 	$self->log->logdie( "Zendesk API Error: http status:".  $response->code .' '.  $response->message . ' Content: ' . $response->content);
     }
-    $self->log->trace( "Zendesk API Error: http status:".  $response->code .' '.  $response->message . ' Content: ' . $response->content) if $self->log->is_trace;
-
-    return decode_json( encode( 'utf8', $response->decoded_content ) );
+    if( $response->decoded_content ){
+        return decode_json( encode( 'utf8', $response->decoded_content ) );
+    }
+    return;
 }
 
 
