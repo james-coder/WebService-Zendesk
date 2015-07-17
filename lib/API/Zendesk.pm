@@ -14,7 +14,7 @@ use YAML;
 use URI::Encode qw/uri_encode/;
 use Encode;
 
-our $VERSION = 0.016;
+our $VERSION = 0.017;
 
 =head1 NAME
 
@@ -81,6 +81,15 @@ has 'default_backoff' => (
     isa         => 'Int',
     required    => 1,
     default     => 10,
+    );
+
+=item max_tries
+Optional.  Default: undef
+Limit maximum number of times a query should be attempted before failing.  If undefined then unlimited retries
+=cut
+has 'max_retries' => (
+    is          => 'ro',
+    isa         => 'Int',
     );
 
 =item zendesk_api_url
@@ -1021,8 +1030,10 @@ sub _request_from_api {
 
     my $response;
     my $retry = 1;
-    my $retry_delay = $self->default_backoff;
+    my $try_count = 0;
     do{
+        my $retry_delay = $self->default_backoff;
+        $try_count++;
         # Fields are a special use-case for GET requests:
         # https://metacpan.org/pod/LWP::UserAgent#ua-get-url-field_name-value
         if( $params{fields} ){
@@ -1042,8 +1053,10 @@ sub _request_from_api {
         }else{
             $response = $self->user_agent->request( $request );
         }
-        if( not $response->is_success ){
-            if(  $response->code == 503 ){
+        if( $response->is_success ){
+            $retry = 0;
+        }else{
+            if( $response->code == 503 ){
                 # Try to decode the response
                 try{
                      my $data = decode_json( encode( 'utf8', $response->decoded_content ) );
@@ -1060,23 +1073,25 @@ sub _request_from_api {
 		    $retry_delay = $response->header('Retry-After');
 		}
 		$self->log->warn( "Received a 429 (Too Many Requests) response... going to backoff and retry in $retry_delay seconds!" );
-            }elsif( $response->code == 500 and $response->decoded_content =~ m/Server closed connection without sending any data back/  ){
-                $self->log->warn( "Received a 500 (Server closed connection without sending any data)... going to backoff and retry!");
-            }elsif( $response->code == 500 and $response->decoded_content =~ m/read timeout/ ){
-                $self->log->warn( "Received a 500 (read timeout)... going to backoff and retry!");
-            }elsif( $response->code == 504 and $response->decoded_content =~ m/Gateway Time-out/ ){
-                $self->log->warn( "Received a 504 (Gateway Time-out)... going to backoff and retry!");
+            }elsif( $response->code == 500 or $response->code == 504 ){
+                $self->log->warn( sprintf( "Received a %u: %s ... going to backoff and retry!", $response->code, $response->decoded_content ) );
             }else{
                 $retry = 0;
             }
+
             if( $retry == 1 ){
-                $response = undef;
-                sleep( $retry_delay );
+                if( not $self->max_tries or $self->max_tries > $try_count ){
+                    $self->log->debug( sprintf( "Try %u failed... sleeping %u before next attempt", $try_count, $retry_delay ) );
+                    sleep( $retry_delay );
+                }else{
+                    $self->log->debug( sprintf( "Try %u failed... exceeded max_tries (%u) so not going to retry", $try_count, $self->max_tries ) );
+                    $retry = 0;
+                }
             }
         }
-    }while( $retry and not $response );
+    }while( $retry );
 
-    $self->log->trace( "Zendesk Response:\n", Dump( $response ) ) if $self->log->is_trace;
+    $self->log->trace( "Last zendesk response:\n", Dump( $response ) ) if $self->log->is_trace;
     if( not $response->is_success ){
 	$self->log->logdie( "Zendesk API Error: http status:".  $response->code .' '.  $response->message . ' Content: ' . $response->content);
     }
