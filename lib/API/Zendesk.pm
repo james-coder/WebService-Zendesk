@@ -14,7 +14,7 @@ use YAML;
 use URI::Encode qw/uri_encode/;
 use Encode;
 
-our $VERSION = 0.017;
+our $VERSION = 0.018;
 
 =head1 NAME
 
@@ -87,7 +87,7 @@ has 'default_backoff' => (
 Optional.  Default: undef
 Limit maximum number of times a query should be attempted before failing.  If undefined then unlimited retries
 =cut
-has 'max_retries' => (
+has 'max_tries' => (
     is          => 'ro',
     isa         => 'Int',
     );
