@@ -14,7 +14,7 @@ use YAML;
 use URI::Encode qw/uri_encode/;
 use Encode;
 
-our $VERSION = 0.018;
+our $VERSION = 0.019;
 
 =head1 NAME
 
@@ -74,13 +74,25 @@ has 'zendesk_username' => (
 
 =item default_backoff
 Optional.  Default: 10
-Time in seconds to back off before retrying request if a http 429 (Too Many Requests) response is received. This is only used if the Retry-Time header is not provided by the api.
+Time in seconds to back off before retrying request.
+If a 429 response is given and the Retry-Time header is provided by the api this will be overridden.
 =cut
 has 'default_backoff' => (
     is          => 'ro',
     isa         => 'Int',
     required    => 1,
     default     => 10,
+    );
+
+=item retry_on_status
+Optional. Default: [ 429, 500, 502, 503, 504 ]
+Which http response codes should we retry on?
+=cut
+has 'retry_on_status' => (
+    is          => 'ro',
+    isa         => 'ArrayRef',
+    required    => 1,
+    default     => sub{ [ 429, 500, 502, 503, 504 ] },
     );
 
 =item max_tries
@@ -1056,25 +1068,23 @@ sub _request_from_api {
         if( $response->is_success ){
             $retry = 0;
         }else{
-            if( $response->code == 503 ){
-                # Try to decode the response
-                try{
-                     my $data = decode_json( encode( 'utf8', $response->decoded_content ) );
-                     if( $data->{description} and $data->{description} =~ m/Please try again in a moment/ ){
-                         $self->log->warn( "Received a 503 (description: Please try again in a moment)... going to retry in $retry_delay!" );
-                     }
-                }catch{
-                    $self->log->error( $_ );
-                    $retry = 0;
-                };
-            }elsif( $response->code == 429 ){
-                # if retry-after header exists and has valid data use this for backoff time
-		if( $response->header( 'Retry-After' ) and $response->header('Retry-After') =~ /^\d+$/ ) {
-		    $retry_delay = $response->header('Retry-After');
-		}
-		$self->log->warn( "Received a 429 (Too Many Requests) response... going to backoff and retry in $retry_delay seconds!" );
-            }elsif( $response->code == 500 or $response->code == 504 ){
-                $self->log->warn( sprintf( "Received a %u: %s ... going to backoff and retry!", $response->code, $response->decoded_content ) );
+            if( grep{ $_ == $response->code } @{ $self->retry_on_status } ){
+                if( $response->code == 429 ){
+                    # if retry-after header exists and has valid data use this for backoff time
+                    if( $response->header( 'Retry-After' ) and $response->header('Retry-After') =~ /^\d+$/ ) {
+                        $retry_delay = $response->header('Retry-After');
+                    }
+                    $self->log->warn( sprintf( "Received a %u (Too Many Requests) response with 'Retry-After' header... going to backoff and retry in %u seconds!",
+                            $response->code,
+                            $retry_delay,
+                            ) );
+                }else{
+                    $self->log->warn( sprintf( "Received a %u: %s ... going to backoff and retry in %u seconds!",
+                            $response->code,
+                            $response->decoded_content,
+                            $retry_delay
+                            ) );
+                }
             }else{
                 $retry = 0;
             }
