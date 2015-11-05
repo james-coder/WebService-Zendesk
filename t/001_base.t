@@ -2,4 +2,4 @@ use strict;
 use warnings;
 
 use Test::More tests => 1;
-use_ok 'API::Zendesk';
+use_ok 'WebService::Zendesk';

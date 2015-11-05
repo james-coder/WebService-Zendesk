@@ -1,4 +1,4 @@
-package API::Zendesk;
+package WebService::Zendesk;
 # ABSTRACT: API interface to Zendesk
 use Moose;
 use MooseX::Params::Validate;
@@ -14,11 +14,11 @@ use YAML;
 use URI::Encode qw/uri_encode/;
 use Encode;
 
-our $VERSION = 0.019;
+our $VERSION = 0.020;
 
 =head1 NAME
 
-API::Zendesk
+WebService::Zendesk
 
 =head1 DESCRIPTION
 
@@ -1103,7 +1103,7 @@ sub _request_from_api {
 
     $self->log->trace( "Last zendesk response:\n", Dump( $response ) ) if $self->log->is_trace;
     if( not $response->is_success ){
-	$self->log->logdie( "Zendesk API Error: http status:".  $response->code .' '.  $response->message . ' Content: ' . $response->content);
+	$self->log->logdie( "Zendesk Error: http status:".  $response->code .' '.  $response->message . ' Content: ' . $response->content);
     }
     if( $response->decoded_content ){
         return decode_json( encode( 'utf8', $response->decoded_content ) );
