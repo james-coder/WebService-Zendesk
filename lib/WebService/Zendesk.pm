@@ -14,7 +14,7 @@ use YAML;
 use URI::Encode qw/uri_encode/;
 use Encode;
 
-our $VERSION = 0.020;
+our $VERSION = 0.021;
 
 =head1 NAME
 
@@ -40,15 +40,24 @@ with "MooseX::Log::Log4perl";
 
 Optional.
 
-Provided by MooseX::WithX - optionally pass a Cache::FileCache object to cache and avoid unnecessary requests
+Provided by MooseX::WithCache - optionally pass a cache object to cache and avoid unnecessary requests
 
 =cut
 
-# Unfortunately it is necessary to define the cache type to be expected here with 'backend'
-# TODO a way to be more generic with cache backend would be better
-with 'MooseX::WithCache' => {
-    backend => 'Cache::FileCache',
-};
+has 'cache' => (
+    is          => 'ro',
+    required    => 0,
+    trigger     => \&_setup_cache,
+    );
+
+sub _setup_cache {
+    my( $self, $cache ) = @_;
+    my $backend = ref( $cache );
+
+    with 'MooseX::WithCache' => {
+        backend => $backend,
+    };
+}
 
 =item zendesk_token
 
