@@ -14,7 +14,7 @@ use YAML;
 use URI::Encode qw/uri_encode/;
 use Encode;
 
-our $VERSION = 0.021;
+our $VERSION = 0.023;
 
 =head1 NAME
 
@@ -370,6 +370,40 @@ sub download_attachment {
         );
     return $target;
 }
+
+=item get_attachment
+
+Get attachment objects
+
+Parameters
+
+=over 4
+
+=item id
+
+required. The id of the attachment
+
+=back
+
+Returns attachment object
+
+=cut
+
+sub get_attachment {
+    my ( $self, %params ) = validated_hash(
+        \@_,
+        id	=> { isa	=> 'Int' },
+    );
+    $self->log->debug( "Getting attachment: $params{id}" );
+    my $path = '/attachments/' . $params{id} . '.json';
+    my( $attachment ) = $self->_paged_get_request_from_api(
+            method  => 'get',
+	    path    => $path,
+            field   => 'attachment',
+	);
+    return $attachment;
+}
+
 
 =item add_response_to_ticket
 
@@ -1011,7 +1045,13 @@ sub _paged_get_request_from_api {
             method      => 'GET',
             path        => $params{path} . ( $params{path} =~ m/\?/ ? '&' : '?' ) . 'page=' . $page,
             );
-	push( @results, @{ $response->{$params{field} } } );
+
+        $self->log->trace( "Response:\n" . Dump( $response ) ) if $self->log->is_trace();
+        if( ref( $response->{$params{field}} ) eq 'ARRAY' ){
+	    push( @results, @{ $response->{$params{field} } } );
+        }else{
+            push( @results, $response->{$params{field}} );
+        }
 	$page++;
       }while( $response->{next_page} and ( not $params{size} or scalar( @results ) < $params{size} ) );
 
